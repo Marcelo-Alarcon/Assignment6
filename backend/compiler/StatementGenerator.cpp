@@ -60,12 +60,112 @@ void StatementGenerator::emitAssignment(PascalParser::AssignmentStatementContext
 
 void StatementGenerator::emitIf(PascalParser::IfStatementContext *ctx)
 {
-    /***** Complete this member function. *****/
+	Label *trueLabel = new Label();
+	Label *falseLabel = new Label();
+
+	// IF or IF/ELSE
+	if (ctx->ELSE() == nullptr){
+		// Generate IF statement
+		compiler->visit(ctx->expression());
+		emit(IFEQ, falseLabel);
+		compiler->visit(ctx->trueStatement());
+		emitLabel(falseLabel);
+	} else {
+		// Generate IF/ELSE statement
+		compiler->visit(ctx->expression());
+		emit(IFEQ, falseLabel);
+		compiler->visit(ctx->trueStatement());
+		emit(GOTO, trueLabel);
+		emitLabel(falseLabel);
+		compiler->visit(ctx->falseStatement());
+		emitLabel(trueLabel);
+	}
 }
 
 void StatementGenerator::emitCase(PascalParser::CaseStatementContext *ctx)
 {
-    /***** Complete this member function. *****/
+	 int bcount = 0;
+	PascalParser::ExpressionContext *exprCtx = ctx->expression();
+	PascalParser::CaseBranchListContext *branchListCtx = ctx->caseBranchList();
+
+	int branches = (branchListCtx->children.size()/2)+1;
+	Label branchLabels[branches];
+	Label *exitcase = new Label();
+
+	compiler->visit(exprCtx);
+
+	emit(LOOKUPSWITCH);
+	struct count{
+		int val;
+		int branchnum;
+	};
+
+	count pair[100];
+	int size = 0;
+
+	if(branchListCtx != nullptr)
+	{
+		for(PascalParser::CaseBranchContext *branchCtx :branchListCtx->caseBranch())
+		{
+			if(branchCtx->caseConstantList() != NULL)
+			{
+				PascalParser::CaseConstantListContext *constListCtx =branchCtx->caseConstantList();
+				for (PascalParser::CaseConstantContext *caseConstCtx : constListCtx->caseConstant())
+				{
+					if(caseConstCtx != NULL)
+					{
+						int v = caseConstCtx->value;
+						pair[size].val = v;
+						pair[size].branchnum = bcount;
+						size++;
+					}
+				}
+				bcount++;
+			}
+		}
+	}
+
+	int k, j, min;
+
+	for(k = 0; k< size-1; k++)
+	{
+		min = k;
+		for(j = k+1; j<size; j++)
+		{
+			if(pair[j].val < pair[min].val)
+			{
+				min = j;
+			}
+		}
+
+		count temp = pair[min];
+		pair[min] = pair[k];
+		pair[k] = temp;
+	}
+
+	for(int i = 0; i< size; i++)
+	{
+		emitLabel(pair[i].val, &branchLabels[pair[i].branchnum]);
+	}
+
+	emitLabel("default", exitcase);
+	int i = 0;
+
+	if(branchListCtx != nullptr)
+	{
+		for(PascalParser::CaseBranchContext *branchCtx :branchListCtx->caseBranch())
+		{
+			if(branchCtx->statement() != nullptr)
+			{
+				emitLabel(&branchLabels[i]);
+				compiler->visit(branchCtx->statement());
+				emit(GOTO, exitcase);
+			}
+			i++;
+		}
+		emitLabel(exitcase);
+	}
+
 }
 
 void StatementGenerator::emitRepeat(PascalParser::RepeatStatementContext *ctx)
@@ -85,28 +185,176 @@ void StatementGenerator::emitRepeat(PascalParser::RepeatStatementContext *ctx)
 
 void StatementGenerator::emitWhile(PascalParser::WhileStatementContext *ctx)
 {
-    /***** Complete this member function. *****/
+	Label *loopTopLabel  = new Label();
+	Label *loopExitLabel = new Label();
+	string op;
+
+	// Extract the operator and the test condition
+	op = ctx->expression()->relOp()->getText();
+	emitLabel(loopTopLabel);
+	compiler->visit(ctx->expression());
+
+	// Generate expression based the operation type
+	if (op=="<=")
+		emit(IFLE, loopExitLabel);
+	else if (op==">=")
+		emit(IFGE, loopExitLabel);
+	else if (op=="<")
+		emit(IFLT, loopExitLabel);
+	else if (op==">")
+		emit(IFGT, loopExitLabel);
+	else if (op=="=")
+		emit(IFEQ, loopExitLabel);
+	else if (op=="<>")
+		emit(IFNE, loopExitLabel);
+
+	// Generate loop statements
+	compiler->visit(ctx->statement());
+	emit(GOTO, loopTopLabel);
+	emitLabel(loopExitLabel);
 }
 
 void StatementGenerator::emitFor(PascalParser::ForStatementContext *ctx)
 {
-    /***** Complete this member function. *****/
+	Label *loopTopLabel  = new Label();
+	Label *loopExitLabel = new Label();
+
+	// Extract the value from the expression
+	PascalParser::VariableContext *var = ctx->variable();
+	string value1 = ctx->expression()[0]->getText();
+	int c = 0;
+
+	// Determine the data type of the value
+	if(ctx->expression()[0]->type == Predefined::integerType)
+		emitLoadConstant(stoi(value1));
+	else if(ctx->expression()[0]->type == Predefined::realType)
+		emitLoadConstant(stof(value1));
+	else if(ctx->expression()[0]->type == Predefined::charType){
+		c = value1[1];
+		emitLoadConstant(c);
+	} else
+		return;
+
+
+	// Get test conditions
+	emitStoreValue(var->variableIdentifier()->entry, var->type);
+	emitLabel(loopTopLabel);
+	compiler->visit(var);
+	compiler->visit(ctx->expression()[1]);
+
+	// Determine direction of the loop
+	bool TO = (ctx->TO() != nullptr);
+	if(TO)
+		emit(IF_ICMPGT, loopExitLabel);
+	else
+		emit(IF_ICMPLT, loopExitLabel);
+
+
+	// Generate Increment/decrement
+	compiler->visit(ctx->statement());
+	emitLoadValue(var->variableIdentifier()->entry);
+	emitLoadConstant(1);
+	if(TO)
+		emit(IADD);
+	else
+		emit(ISUB);
+
+
+	// Generate Reassignment and loop
+	emitStoreValue(var->variableIdentifier()->entry, var->type);
+	emit(GOTO, loopTopLabel);
+	emitLabel(loopExitLabel);
 }
 
 void StatementGenerator::emitProcedureCall(PascalParser::ProcedureCallStatementContext *ctx)
 {
-    /***** Complete this member function. *****/
+    string name = ctx->procedureName()->getText();
+    string arg;
+    bool no_args = ctx->argumentList() == nullptr;
+    string call = programName + "/" + name;
+    if(no_args){
+    	call = call + "()";
+    	call = call + typeDescriptor(ctx->procedureName()->entry);
+    	emit(INVOKESTATIC, call);
+    	return;
+    }
+
+
+    vector<SymtabEntry *> *parmIds = ctx->procedureName()->entry->getRoutineParameters();
+
+    int index = 0;
+
+    if (parmIds != nullptr)
+        {
+            for (SymtabEntry *parmId : *parmIds)
+            {
+            	compiler->visit(ctx->argumentList()->argument()[index]->expression());
+            	if(typeDescriptor(parmId) == "F" && ctx->argumentList()->argument()[index]->expression()->type == Predefined::integerType){
+					emit(I2F);
+				}
+                index++;
+                localStack->increase(1);
+                    ++count;
+            }
+        }
+
+    emitCall(ctx->procedureName()->entry, ctx->argumentList());
+
 }
 
 void StatementGenerator::emitFunctionCall(PascalParser::FunctionCallContext *ctx)
 {
-    /***** Complete this member function. *****/
+	string name = ctx->functionName()->getText();
+	string arg;
+	bool no_args = ctx->argumentList() == nullptr;
+	string call = programName + "/" + name;
+	if(no_args){
+		call = call + "()";
+		call = call + typeDescriptor(ctx->functionName()->entry);
+		emit(INVOKESTATIC, call);
+		return;
+	}
+
+	vector<SymtabEntry *> *parmIds = ctx->functionName()->entry->getRoutineParameters();
+
+	int index = 0;
+
+	if (parmIds != nullptr)
+		{
+			for (SymtabEntry *parmId : *parmIds)
+			{
+				compiler->visit(ctx->argumentList()->argument()[index]->expression());
+				if(typeDescriptor(parmId) == "F" && ctx->argumentList()->argument()[index]->expression()->type == Predefined::integerType){
+					emit(I2F);
+				}
+				index++;
+			}
+		}
+
+	emitCall(ctx->functionName()->entry, ctx->argumentList());
+
 }
 
 void StatementGenerator::emitCall(SymtabEntry *routineId,
                                   PascalParser::ArgumentListContext *argListCtx)
 {
-    /***** Complete this member function. *****/
+	string name = routineId->getName();
+	string call = programName + "/" + name + "(";
+	vector<SymtabEntry *> *parmIds = routineId->getRoutineParameters();
+
+	if (parmIds != nullptr)
+	{
+		for (SymtabEntry *parmId : *parmIds)
+		{
+			call += typeDescriptor(parmId);
+		}
+	}
+
+
+	call = call + ")";
+	call = call + typeDescriptor(routineId);
+
+	emit(INVOKESTATIC, call);
 }
 
 void StatementGenerator::emitWrite(PascalParser::WriteStatementContext *ctx)
